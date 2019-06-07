@@ -107,20 +107,111 @@ def test_tanh_sinh_numpy(f, a, b, exact):
 
 
 def test_tanh_sinh_numpy_example():
+
+    kernel = numpy
+
+    # def f(x):
+    #     return kernel.exp(x) * kernel.cos(x)
+    # a = 0.0
+    # b = kernel.pi / 2
+    # exact = (kernel.exp(kernel.pi / 2) - 1) / 2
+
+    def f(x):
+        return kernel.sqrt(1 - x**2)
+    a = -1
+    b = +1
+    exact = kernel.pi / 2
+
+    # # SIAM challenge problem
+    # def f(x):
+    #     return numpy.cos(numpy.log(x) / x) / x
+    # a = 0.0
+    # b = 1.0
+    # exact = 0.323367...
+
     tol = 1.0e-14
+
     val, error_estimate = quadpy.line_segment.tanh_sinh(
-        lambda x: numpy.exp(x) * numpy.cos(x),
-        0,
-        numpy.pi / 2,
+        f,
+        a,
+        b,
         tol,
+        h0=3.0,
+        max_steps=5,
+        # mode="mpmath"
         # f_derivatives={
         #     1: lambda x: numpy.exp(x) * (numpy.cos(x) - numpy.sin(x)),
         #     2: lambda x: -2 * numpy.exp(x) * numpy.sin(x),
         # },
     )
-    exact = (numpy.exp(numpy.pi / 2) - 1) / 2
+
+    print(val, exact, val - exact)
 
     assert abs(val - exact) < tol
+    return
+
+
+def test_precision_per_fun_evals():
+    import matplotlib.pyplot as plt
+
+    # def fun(x):
+    #     return numpy.exp(x) * numpy.cos(x)
+    # a = 0.0
+    # b = numpy.pi / 2
+    # exact = (numpy.exp(numpy.pi / 2) - 1) / 2
+
+    # def fun(x):
+    #     return numpy.exp(x) * numpy.sin(x)
+    # a = 0.0
+    # b = numpy.pi
+    # exact = (1 + numpy.exp(numpy.pi)) / 2
+
+    # def fun(x):
+    #     return numpy.log(x)
+    # a = 1.0
+    # b = 2.0
+    # exact = numpy.log(4) - 1
+
+    def fun(x):
+        return numpy.log(x)
+
+    a = 1.0
+    b = 1000.0
+    exact = 1000 * numpy.log(1000) - 999
+
+    dh = 5.0e-1
+    H0 = numpy.linspace(dh, 6.0, int((6.0 - dh) / dh) + 1)
+
+    for h0 in H0:
+        counts = []
+        errors = []
+        for max_steps in range(10):
+            count = 0
+
+            def f(x):
+                nonlocal count
+                count += len(x)
+                return fun(x)
+
+            val, error_estimate = quadpy.line_segment.tanh_sinh(
+                f,
+                a,
+                b,
+                1.0e-20,
+                h0=h0,
+                max_steps=max_steps,
+                # f_derivatives={
+                #     1: lambda x: numpy.exp(x) * (numpy.cos(x) - numpy.sin(x)),
+                #     2: lambda x: -2 * numpy.exp(x) * numpy.sin(x),
+                # },
+            )
+            counts += [count]
+            errors += [abs(val - exact)]
+
+        plt.loglog(counts, errors, label=str(h0))
+
+    plt.legend()
+    plt.show()
     return
 
 
@@ -221,4 +312,5 @@ if __name__ == "__main__":
     #     1,
     #     mp.sqrt(mp.pi),
     # )
-    test_tanh_sinh_numpy_example()
+    # test_tanh_sinh_numpy_example()
+    test_precision_per_fun_evals()

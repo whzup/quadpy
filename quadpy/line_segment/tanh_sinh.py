@@ -7,7 +7,7 @@ import numpy
 import scipy.special
 
 
-def tanh_sinh(f, a, b, eps, max_steps=10, f_derivatives=None, mode="numpy"):
+def tanh_sinh(f, a, b, eps, h0=None, max_steps=10, f_derivatives=None, mode="numpy"):
     """Integrate a function `f` between `a` and `b` with accuracy `eps`.
 
     For more details, see
@@ -41,12 +41,12 @@ def tanh_sinh(f, a, b, eps, max_steps=10, f_derivatives=None, mode="numpy"):
         f_right[2] = lambda s: +f_derivatives[2](b - s)
 
     value_estimate, error_estimate = tanh_sinh_lr(
-        f_left, f_right, b - a, eps, max_steps=max_steps, mode=mode
+        f_left, f_right, b - a, eps, h0=h0, max_steps=max_steps, mode=mode
     )
     return value_estimate, error_estimate
 
 
-def tanh_sinh_lr(f_left, f_right, alpha, eps, max_steps=10, mode="numpy"):
+def tanh_sinh_lr(f_left, f_right, alpha, eps, h0=None, max_steps=10, mode="numpy"):
     """Integrate a function `f` between `a` and `b` with accuracy `eps`. The function
     `f` is given in terms of two functions
 
@@ -130,106 +130,111 @@ def tanh_sinh_lr(f_left, f_right, alpha, eps, max_steps=10, mode="numpy"):
         if num_digits_orig < num_digits:
             mp.dps = num_digits
 
-    h = _solve_expx_x_logx(eps ** 2, tol, kernel, ln)
+    if h0 is None:
+        h = _solve_expx_x_logx(eps ** 2, tol, kernel, ln)
+    else:
+        h = h0
 
     if mode == "mpmath":
         mp.dps = num_digits_orig
 
     last_error_estimate = None
+    value_estimates = []
 
-    success = False
     for level in range(max_steps + 1):
-        # We would like to calculate the weights until they are smaller than tau, i.e.,
+        # We would like to incorporate all terms with the weights larger or equal to a
+        # particular tau (e.g., tau = eps**2). The first j that does not fulfill this is
         #
-        #     h * pi/2 * cosh(h*j) / cosh(pi/2 * sinh(h*j))**2 < tau.
+        #     tau > h * alpha/2 * pi/2 * cosh(h*j) / cosh(pi/2 * sinh(h*j))**2
         #
+        # with alpha being the integration interval length.
         # (TODO Newton on this expression to find tau?)
         #
         # To streamline the computation, j is estimated in advance. The only assumption
         # we're making is that h*j >> 1 such that exp(-h*j) can be neglected. With this,
         # the above becomes
         #
-        #     tau > h * pi/2 * exp(h*j)/2 / cosh(pi/2 * exp(h*j)/2)**2
+        #     tau > h * alpha/2 * pi/2 * exp(h*j)/2 / cosh(pi/2 * exp(h*j)/2)**2
         #
         # and further
         #
-        #     tau > h * pi * exp(h*j) / exp(pi/2 * exp(h*j)).
+        #     tau > h * alpha * pi * exp(h*j) * exp(-pi/2 * exp(h*j)).
         #
-        # Calling z = - pi/2 * exp(h*j), one gets
+        # Calling z = -pi/2 * exp(h*j), one gets
         #
-        #     tau > -2*h*z * exp(z)
+        #     tau / (2*h*alpha) > -z * exp(z)
         #
-        # This inequality is fulfilled exactly if z = W(-tau/h/2) with W being the
-        # (-1)-branch of the Lambert-W function IF exp(1)*tau < 2*h (which we can assume
-        # since `tau` will generally be small). We finally get
+        # This inequality is fulfilled exactly if z = W(-tau/h/2/alpha) with W being the
+        # (-1)-branch of the Lambert W function IF exp(1)*tau < 2*h*alpha (which we can
+        # assume since `tau` will generally be small). We finally get
         #
-        #     j > ln(-2/pi * W(-tau/h/2)) / h.
+        #     j > ln(-2/pi * W(-tau/h/2/alpha)) / h.
         #
-        # We do require j to be positive, so -2/pi * W(-tau/h/2) > 1. This translates to
-        # the slightly stricter requirement
+        # We do require j to be positive, so -2/pi * W(-tau/h/2/alpha) > 1. This
+        # translates to the slightly stricter requirement
         #
-        #     tau * exp(pi/2) < pi * h,
+        #     tau * exp(pi/2) < pi * h * alpha,
         #
         # i.e., h needs to be about 1.531 times larger than tau (not only 1.359 times as
         # the previous bound suggested).
         #
         # Note further that h*j is ever decreasing as h decreases.
-        assert eps ** 2 * kernel.exp(kernel.pi / 2) < kernel.pi * h
-        j = int(ln(-2 / kernel.pi * lambertw(-eps ** 2 / h / 2, -1)) / h)
+        tau = eps ** 2
+        # assert tau / alpha * kernel.exp(1) < 2 * h
+        assert tau * kernel.exp(kernel.pi / 2) < kernel.pi * h
+        j = int(ln(-2 / kernel.pi * lambertw(-tau / h / 2 / alpha, -1)) / h)
+        #
+        t = h * numpy.arange(1, j + 1, 2)
 
-        # At level 0, one only takes the midpoint, for all greater levels every other
-        # point. The value estimation is later completed with the estimation from the
-        # previous level which.
         if level == 0:
-            t = [0]
-        else:
-            t = h * numpy.arange(1, j + 1, 2)
+            t = numpy.concatenate([[0.0], h * numpy.arange(1, j + 1, 2)])
 
         if mode == "mpmath":
-            sinh_t = mp.pi / 2 * numpy.array(list(map(mp.sinh, t)))
-            cosh_t = mp.pi / 2 * numpy.array(list(map(mp.cosh, t)))
-            cosh_sinh_t = numpy.array(list(map(mp.cosh, sinh_t)))
+            pi2_sinh_t = mp.pi / 2 * numpy.array(list(map(mp.sinh, t)))
+            pi2_cosh_t = mp.pi / 2 * numpy.array(list(map(mp.cosh, t)))
+            cosh_pi2_sinh_t = numpy.array(list(map(mp.cosh, pi2_sinh_t)))
             # y = alpha/2 * (1 - x)
             # x = [mp.tanh(v) for v in u2]
-            exp_sinh_t = numpy.array(list(map(mp.exp, sinh_t)))
+            exp_pi2_sinh_t = numpy.array(list(map(mp.exp, pi2_sinh_t)))
         else:
             assert mode == "numpy"
-            sinh_t = numpy.pi / 2 * numpy.sinh(t)
-            cosh_t = numpy.pi / 2 * numpy.cosh(t)
-            cosh_sinh_t = numpy.cosh(sinh_t)
+            pi2_sinh_t = numpy.pi / 2 * numpy.sinh(t)
+            pi2_cosh_t = numpy.pi / 2 * numpy.cosh(t)
+            cosh_pi2_sinh_t = numpy.cosh(pi2_sinh_t)
             # y = alpha/2 * (1 - x)
             # x = [mp.tanh(v) for v in u2]
-            exp_sinh_t = numpy.exp(sinh_t)
+            exp_pi2_sinh_t = numpy.exp(pi2_sinh_t)
 
-        y0 = alpha2 / exp_sinh_t / cosh_sinh_t
-        y1 = -alpha2 * cosh_t / cosh_sinh_t ** 2
-
-        weights = -h * y1
+        y0 = alpha2 / exp_pi2_sinh_t / cosh_pi2_sinh_t
+        weights = h * alpha2 * pi2_cosh_t / cosh_pi2_sinh_t ** 2
+        print("weights", weights)
 
         if mode == "mpmath":
             fly = numpy.array([f_left[0](yy) for yy in y0])
-            fry = numpy.array([f_right[0](yy) for yy in y0])
+            if level == 0:
+                fry = fly
+            else:
+                fry = numpy.array([f_right[0](yy) for yy in y0])
         else:
             assert mode == "numpy"
             fly = f_left[0](y0)
-            fry = f_right[0](y0)
+            if level == 0:
+                fry = fly
+            else:
+                fry = f_right[0](y0)
 
         lsummands = fly * weights
         rsummands = fry * weights
 
         # Perform the integration.
         if level == 0:
-            # The root level only contains one node, the midpoint; function values of
-            # f_left and f_right are equal here. Deliberately take lsummands here.
-            value_estimates = list(lsummands)
+            assert abs(lsummands[0] - rsummands[0]) < 1.0e-15
+            s = numpy.concatenate([lsummands, rsummands[1:]])
         else:
-            value_estimates.append(
-                # Take the estimation from the previous step and half the step size.
-                # Fill the gaps with the sum of the values of the current step.
-                value_estimates[-1] / 2
-                + fsum(lsummands)
-                + fsum(rsummands)
-            )
+            # Take the estimation from the previous step and half the step size.
+            # Fill the gaps with the sum of the values of the current step.
+            s = numpy.concatenate([[value_estimates[-1] / 2], lsummands, rsummands])
+        value_estimates += [fsum(s)]
 
         # error estimation
         if 1 in f_left and 2 in f_left:
@@ -252,16 +257,23 @@ def tanh_sinh_lr(f_left, f_right, alpha, eps, max_steps=10, mode="numpy"):
             last_error_estimate = error_estimate
         else:
             error_estimate = _error_estimate2(
-                eps, value_estimates, lsummands, rsummands
+                eps, value_estimates, lsummands, rsummands, ln
             )
 
+        print(t, h)
+        print(lsummands)
+        print(rsummands)
+        print(value_estimates)
+        print(error_estimate)
+        print()
+
         if abs(error_estimate) < eps:
-            success = True
             break
 
+        # if level > 0:
+        #     h /= 2
         h /= 2
 
-    assert success
     return value_estimates[-1], error_estimate
 
 
@@ -353,7 +365,7 @@ def _error_estimate1(
     return out
 
 
-def _error_estimate2(eps, value_estimates, left_summands, right_summands):
+def _error_estimate2(eps, value_estimates, left_summands, right_summands, ln):
     # "less formal" error estimation after Bailey,
     # <http://www.davidhbailey.com/dhbpapers/dhb-tanh-sinh.pdf>
     if len(value_estimates) < 3:
@@ -371,7 +383,7 @@ def _error_estimate2(eps, value_estimates, left_summands, right_summands):
         e2 = abs(value_estimates[-1] - value_estimates[-3])
         e3 = eps * max(max(abs(left_summands)), max(abs(right_summands)))
         e4 = max(abs(left_summands[-1]), abs(right_summands[-1]))
-        error_estimate = max(e1 ** (mp.log(e1) / mp.log(e2)), e1 ** 2, e3, e4)
+        error_estimate = max(e1 ** (ln(e1) / ln(e2)), e1 ** 2, e3, e4)
 
     return error_estimate
 

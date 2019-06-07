@@ -132,7 +132,7 @@ to the singularity.)
 If there are singularities at both ends, the function can be shifted both ways and be
 handed off to `tanh_sinh_lr`; For example, for the function `1 / sqrt(1 - x**2)`, this
 gives
-```
+```python
 import numpy
 import quadpy
 
@@ -140,8 +140,8 @@ import quadpy
 #    return 1 / numpy.sqrt(1 - x ** 2)
 
 val, error_estimate = quadpy.line_segment.tanh_sinh_lr(
-      [lambda x: 1 / numpy.sqrt(-x**2 + 2*x)],  # = 1 / sqrt(1 - (x-1)**2)
-      [lambda x: 1 / numpy.sqrt(-x**2 + 2*x)],  # = 1 / sqrt(1 - (-(x-1))**2)
+      [lambda x: 1 / numpy.sqrt(2*x - x**2)],  # = 1 / sqrt(1 - (x-1)**2)
+      [lambda x: 1 / numpy.sqrt(2*x - x**2)],  # = 1 / sqrt(1 - (-(x-1))**2)
       2,  # length of the interval
       1.0e-10
       )
